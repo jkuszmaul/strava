@@ -28,7 +28,6 @@ OAUTH_TOKEN_URL = "https://www.strava.com/oauth/token"
 
 CLIENT_ID = "client_id"
 CLIENT_SECRET = "client_secret"
-ClientData = namedtuple("ClientData", [CLIENT_ID, CLIENT_SECRET])
 REFRESH_TOKEN = "refresh_token"
 ACCESS_TOKEN = "access_token"
 EXPIRATION_TIME = "expiration_time"
