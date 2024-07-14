@@ -8,7 +8,7 @@ from authorization import ApiAccess
 
 api = ApiAccess()
 api.make_request("/athlete")
-api.make_request("/athlete/activities", json={"page": 1, "per_page": 200})
+api.make_request("/athlete/activities", params={"page": 1, "per_page": 200})
 """
 from collections import namedtuple
 import json
