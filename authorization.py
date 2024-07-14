@@ -291,7 +291,6 @@ class ApiAccess():
         token_exchange = self.client_data.asdict()
         token_exchange["grant_type"] = "authorization_code"
         token_exchange["code"] = oauth_result["code"][0]
-        print(token_exchange)
         self.__handle_token_response(
             requests.post(OAUTH_TOKEN_URL, json=token_exchange, timeout=5))
         print(
