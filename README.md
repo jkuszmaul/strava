@@ -34,7 +34,7 @@ then print out the information about your profile.
 If you want to access any more detailed information, you will need to give
 further permissions to the application to be able to read things. To this end,
 you may run the `./get_activities_demo.py`. This demo will attempt to query
-all the activities which you have and print them out as it goes. At first, this
+a random week of activities and print them out. At first, this
 will fail due to insufficient permissions. When it does so, it will attempt to
 open a webpage in your browser. This will give you the option to give the
 application varying levels of access to view your data (it will overask; you may
