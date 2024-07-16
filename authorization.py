@@ -45,6 +45,9 @@ SHORT_RATE_LIMIT_PERIOD_MINUTES = 15
 # See https://developers.strava.com/docs/
 RATE_LIMIT_RESPONSE_CODE = 429
 
+READ_RATE_LIMIT_USAGE_HEADER = "X-ReadRateLimit-Usage"
+READ_RATE_LIMIT_LIMIT_HEADER = "X-ReadRateLimit-Limit"
+
 
 class ClientData():
     """Provides the client ID and secret from disk or stdin.
@@ -105,12 +108,18 @@ class RateLimitTracking():
 
     def update(self, headers: Dict[str, str]):
         """Update with the headers from an HTTP response."""
+        if READ_RATE_LIMIT_USAGE_HEADER not in headers:
+            print("Warning: No rate limit information in response headers.")
+            return
+        if READ_RATE_LIMIT_LIMIT_HEADER not in headers:
+            print("Warning: No rate limit information in response headers.")
+            return
         self.last_rate_limit_update = datetime.now(tz=timezone.utc)
         self.short_count, self.daily_count = [
-            int(n) for n in headers["X-ReadRateLimit-Usage"].split(",")
+            int(n) for n in headers[READ_RATE_LIMIT_USAGE_HEADER].split(",")
         ]
         self.short_limit, self.daily_limit = [
-            int(n) for n in headers["X-ReadRateLimit-Limit"].split(",")
+            int(n) for n in headers[READ_RATE_LIMIT_LIMIT_HEADER].split(",")
         ]
 
     # The Strava API buckets rate limits by taking every UTC day for the daily
