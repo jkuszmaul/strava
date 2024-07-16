@@ -35,28 +35,22 @@ if __name__ == "__main__":
     for activity in all_activities:
         activity_id = activity["id"]
         try:
+            # Note that these sorts of repeated queries tend to result in
+            # exhausting the rate limits of the Strava API. In this case,
+            # the library will automatically:
+            # (a) leave a bit of buffer so that we don't completely exhaust
+            #     our allowed queries (in case you want to be able to run
+            #     other queries while waiting for this).
+            #     If you do not want to leave a buffer, set rate_limit_buffer
+            #     to False.
+            # (b) Will automatically sleep until the rate limiting will have
+            #     expired. This sleeping can be disabled by turning off
+            #     rate_limit_autobackoff (in which case an HTTPError willbe
+            #     thrown instead).
             detailed_activity = db.query(f"/activities/{activity_id}",
-                                         params={"include_all_efforts": True})
-        # If we get interrupted early (e.g., hitting API rate limits), then
-        # break cleanly and just get the segment counts printed out.
-        except HTTPError as e:
-            if e.response.status_code == 429:
-                if last_rate_limit is not None and (
-                        datetime.now() -
-                        last_rate_limit) < timedelta(minutes=1):
-                    print("Hit rate limit twice in short succession; bailing.")
-                    break
-                last_rate_limit = datetime.now()
-                # Wait for 20 minutes. The API limits operate on both a 15 minute
-                # limit and a daily limit. If we hit rate limits twice in a row,
-                # we'll assume that we hit the daily rate limit and bail entirely.
-                # TODO: We should also be able to just access the response headers
-                # directly to figure this out.
-                print(
-                    "Hit rate limit success; waiting 20 minutes to continue.")
-                time.sleep(20 * 60)
-                continue
-            break
+                                         params={"include_all_efforts": True},
+                                         rate_limit_buffer=True,
+                                         rate_limit_autobackoff=True)
         except KeyboardInterrupt:
             break
         for segment_effort in detailed_activity["segment_efforts"]:

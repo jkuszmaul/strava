@@ -17,9 +17,11 @@ import urllib.parse
 import webbrowser
 import requests
 import sys
+import time
 import http.server
+from typing import Dict
 from threading import Thread
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 CLIENT_SECRETS = "client_secrets.json"
 EPHEMERAL_SECRETS = "ephemeral_secrets.json"
@@ -31,6 +33,17 @@ CLIENT_SECRET = "client_secret"
 REFRESH_TOKEN = "refresh_token"
 ACCESS_TOKEN = "access_token"
 EXPIRATION_TIME = "expiration_time"
+
+# Configures the maximum proportion of our API rate limits that we will use
+# by default (this makes it so that we don't completely exhaust our API
+# allocations unless explicitly requested to do so).
+MAX_RATE_LIMIT_USAGE = 0.8
+# The time period, in minutes, if the "short" rate limit on the Strava API.
+# See https://developers.strava.com/docs/rate-limits/
+SHORT_RATE_LIMIT_PERIOD_MINUTES = 15
+# Expected HTTP response code when rate limited.
+# See https://developers.strava.com/docs/
+RATE_LIMIT_RESPONSE_CODE = 429
 
 
 class ClientData():
@@ -68,6 +81,111 @@ class ClientData():
         # Until/unless more fields are added, we can just use __dict__ to
         # trivially convert the data.
         return self.__dict__
+
+
+class RateLimitTracking():
+    """Tracks the rate-limiting status of the current API calls.
+
+  Note that currently this only tracks the "read" rate limit, since that
+  represents most of what we currently support.
+
+  See https://developers.strava.com/docs/rate-limits/ for documentation
+  on how the rate limits work.
+  """
+
+    def __init__(self):
+        self.last_rate_limit_update = None
+        # Track the current rate-limit statistics.
+        # The "short" limit corresponds to the 15 minute limit;
+        # The "daily" limit corresponds to the daily limit.
+        self.short_count = None
+        self.daily_count = None
+        self.short_limit = None
+        self.daily_limit = None
+
+    def update(self, headers: Dict[str, str]):
+        """Update with the headers from an HTTP response."""
+        self.last_rate_limit_update = datetime.now(tz=timezone.utc)
+        self.short_count, self.daily_count = [
+            int(n) for n in headers["X-ReadRateLimit-Usage"].split(",")
+        ]
+        self.short_limit, self.daily_limit = [
+            int(n) for n in headers["X-ReadRateLimit-Limit"].split(",")
+        ]
+
+    # The Strava API buckets rate limits by taking every UTC day for the daily
+    # limit (so you can do 1000 queries at 11:59pm UTC and then another 1000
+    # at 12:01am UTC the following day). The 15 minute periods are similarly
+    # reset at 0, 15, 30, and 45 minutes past the hour.
+    def __daily_refresh_time(self) -> datetime:
+        if self.last_rate_limit_update is None:
+            return datetime.fromtimestamp(0)
+        last_time_utc = self.last_rate_limit_update.astimezone(tz=timezone.utc)
+        last_time_rounded = datetime(last_time_utc.year,
+                                     last_time_utc.month,
+                                     last_time_utc.day,
+                                     tzinfo=timezone.utc)
+        return last_time_rounded + timedelta(days=1)
+
+    def __short_refresh_time(self) -> datetime:
+        if self.last_rate_limit_update is None:
+            return datetime.fromtimestamp(0)
+        last_time_utc = self.last_rate_limit_update.astimezone(tz=timezone.utc)
+        last_minutes_rounded = (int(
+            last_time_utc.minute /
+            SHORT_RATE_LIMIT_PERIOD_MINUTES)) * SHORT_RATE_LIMIT_PERIOD_MINUTES
+        last_time_rounded = datetime(last_time_utc.year,
+                                     last_time_utc.month,
+                                     last_time_utc.day,
+                                     hour=last_time_utc.hour,
+                                     minute=last_minutes_rounded,
+                                     tzinfo=timezone.utc)
+        return last_time_rounded + timedelta(
+            minutes=SHORT_RATE_LIMIT_PERIOD_MINUTES)
+
+    def __is_limited(self, count, nominal_limit, refresh_time,
+                     leave_buffer) -> bool:
+        if self.last_rate_limit_update is None:
+            return False
+        limit = nominal_limit * (MAX_RATE_LIMIT_USAGE if leave_buffer else 1.0)
+        is_limited = count >= limit
+        return is_limited and datetime.now(tz=timezone.utc) < refresh_time
+
+    def __is_short_limited(self, leave_buffer) -> bool:
+        return self.__is_limited(self.short_count, self.short_limit,
+                                 self.__short_refresh_time(), leave_buffer)
+
+    def __is_daily_limited(self, leave_buffer) -> bool:
+        return self.__is_limited(self.daily_count, self.daily_limit,
+                                 self.__daily_refresh_time(), leave_buffer)
+
+    def is_limited(self, leave_buffer=True) -> bool:
+        """Returns true if we are currently rate-limited.
+
+    If leave_buffer is true, we will report that we are rate-limited if we
+    have used more than MAX_RATE_LIMIT_USAGE proportion of our limit.
+    """
+        return (self.__is_short_limited(leave_buffer)
+                or self.__is_daily_limited(leave_buffer))
+
+    def next_unlimited_time(self, leave_buffer=True) -> datetime:
+        """Returns the next time at which we will stop being rate limited."""
+        if self.__is_daily_limited(leave_buffer):
+            return self.__daily_refresh_time()
+        if self.__is_short_limited(leave_buffer):
+            return self.__short_refresh_time()
+        return datetime.fromtimestamp(0)
+
+    def sleep_until_unlimited(self, leave_buffer=True):
+        """Sleeps until the next time at which we will no longer be rate limited."""
+        if not self.is_limited(leave_buffer=leave_buffer):
+            return
+        target_time = self.next_unlimited_time(leave_buffer=leave_buffer)
+        print(
+            f"Sleeping until {target_time.astimezone(tz=None)} due to API rate limiting."
+        )
+        time.sleep(
+            (target_time - datetime.now(tz=timezone.utc)).total_seconds())
 
 
 class ApiAccess():
@@ -126,6 +244,7 @@ class ApiAccess():
             self.access_token = None
 
         self.__refresh_credentials()
+        self.rate_limiting = RateLimitTracking()
 
     def __refresh_credentials(self):
         """Checks if the current access token has expired and retrieves a new one if needed."""
@@ -184,6 +303,8 @@ class ApiAccess():
                      method=requests.get,
                      attempt_auth=True,
                      url_prefix=API_URL,
+                     rate_limit_buffer=True,
+                     rate_limit_autobackoff=True,
                      **kwargs):
         """Triggers an HTTP request against the relevant API endpoint.
 
@@ -193,24 +314,53 @@ class ApiAccess():
     attempt_auth: Whether to attempt browser authentication if we discover that the application does not have permissions to do something.
     url_prefix: Strava API to actually use.
     json: Request body to be sent, e.g. {"before": 1720939445, "after": 0, "page": 1, "per_page": 20} for something like /athlete/activities.
+    rate_limit_buffer: If set, will always try to ensure that we leave some buffer before hitting the API rate limits.
+    rate_limit_autobackoff: If set, will automatically wait if we are currently at the query rate limits.
     **kwargs: Passed to method().
     """
+        if rate_limit_autobackoff:
+            self.rate_limiting.sleep_until_unlimited(
+                leave_buffer=rate_limit_buffer)
         # Check that our credentials have not expired.
         self.__refresh_credentials()
         response = method(
             url_prefix + url,
             headers={"Authorization": f"Bearer {self.access_token}"},
             **kwargs)
+        self.rate_limiting.update(response.headers)
         if response.status_code == 401 and attempt_auth:
             print("Failed authorization.", file=sys.stderr)
             self.__attempt_oauth()
             # We are authorized with new scopes, try again (but only once).
-            return self.make_request(url,
-                                     method=method,
-                                     attempt_auth=False,
-                                     **kwargs)
+            return self.make_request(
+                url,
+                method=method,
+                attempt_auth=False,
+                url_prefix=url_prefix,
+                rate_limit_buffer=rate_limit_buffer,
+                rate_limit_autobackoff=rate_limit_autobackoff,
+                **kwargs)
+        elif response.status_code == RATE_LIMIT_RESPONSE_CODE and rate_limit_autobackoff:
+            # We unexpectedly hit the rate limit; try again (note: this has the
+            # potential to infinitely recurse).
+            return self.make_request(
+                url,
+                method=method,
+                attempt_auth=attempt_auth,
+                url_prefix=url_prefix,
+                rate_limit_buffer=rate_limit_buffer,
+                rate_limit_autobackoff=rate_limit_autobackoff,
+                **kwargs)
         else:
             response.raise_for_status()
+
+        if self.rate_limiting.is_limited():
+            if rate_limit_buffer:
+                print("WARNING: Getting near query rate limits.")
+            else:
+                print(
+                    "WARNING: Exhausted query rate limits; further queries will fail until the current time period is exhausted."
+                )
         return response
 
     def __attempt_oauth(self):

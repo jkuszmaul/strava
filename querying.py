@@ -29,7 +29,8 @@ def caching_get(getter,
                 params=None,
                 force_refresh=False,
                 pagination=False,
-                cache_folder=CACHE_FOLDER):
+                cache_folder=CACHE_FOLDER,
+                **kwargs):
     """GETs from a URL, attempting to cache based on the URL & params.
 
   This should not be used for queries which are unlikely to be idempotent
@@ -37,6 +38,8 @@ def caching_get(getter,
   most recent activities are included). Since any query *can* return
   different results over time, we do introduce a default cache expiration
   time.
+
+  **kwargs will be passed through to the getter.
 
   This is implemented by:
   1. Sorting the params such that they can be used in a stable order.
@@ -52,7 +55,7 @@ def caching_get(getter,
         to the GET request.
   4. If more then CACHE_EXPIRATION_TIME has passed since the creation time,
      or if the folder is not present, then we will call
-     getter(url=url,params=params) and save the results appropriately.
+     getter(url=url,params=params,**kwargs) and save the results appropriately.
   5. We will return the JSON result, or throw an exception with any relevant
      error.
   """
@@ -98,7 +101,7 @@ def caching_get(getter,
                 "per_page": RESPONSES_PER_PAGE
             }
             page += 1
-            response = getter(url=url, params=page_params)
+            response = getter(url=url, params=page_params, **kwargs)
             response.raise_for_status()
             response_json = response.json()
             if len(response_json) == 0:
@@ -113,7 +116,7 @@ def caching_get(getter,
                 )
                 last_progress_report = current_time
     else:
-        response = getter(url=url, params=params)
+        response = getter(url=url, params=params, **kwargs)
         response.raise_for_status()
         result = response.json()
 
@@ -203,7 +206,12 @@ class QueryDatabase():
                 return self.all_paths[path]
         raise ValueError(f"{query_path} is not a valid path.")
 
-    def query(self, path, params=None, force_refresh=False):
+    def query(self,
+              path,
+              params=None,
+              force_refresh=False,
+              rate_limit_buffer=True,
+              rate_limit_autobackoff=True):
         """Queries a path with the provided parameters.
 
     This automatically attempts to cache results, which does mean that if
@@ -221,14 +229,17 @@ class QueryDatabase():
 
     Returns the JSON result of the relevant query.
 
-    TODO: Expose rate limit headers directly. See https://developers.strava.com/docs/rate-limits/
+    rate_limit_buffer and rate_limit_autobackoff will be passed through to
+    ApiAccess.make_request(). See make_request() for explanation.
     """
         is_paginated = self.__get_data_for_path(path).paginated
         return caching_get(getter=self.api.make_request,
                            url=path,
                            force_refresh=force_refresh,
                            params=params,
-                           pagination=is_paginated)
+                           pagination=is_paginated,
+                           rate_limit_buffer=rate_limit_buffer,
+                           rate_limit_autobackoff=rate_limit_autobackoff)
 
     # Future work to try to do fancier caching of activities:
     # Always fetch with an explicit date range. The first fetch will be from
