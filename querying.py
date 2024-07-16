@@ -21,7 +21,7 @@ CREATION_TIME_FILE_NAME = "creation_time"
 CONTENT_FilE_NAME = "content.json"
 RESPONSES_PER_PAGE = 200
 
-CACHE_EXPIRATION_TIME = datetime.timedelta(days=7)
+CACHE_EXPIRATION_TIME = datetime.timedelta(days=100)
 
 
 def caching_get(getter,
