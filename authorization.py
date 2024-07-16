@@ -354,7 +354,7 @@ class ApiAccess():
         else:
             response.raise_for_status()
 
-        if self.rate_limiting.is_limited():
+        if self.rate_limiting.is_limited(leave_buffer=rate_limit_buffer):
             if rate_limit_buffer:
                 print("WARNING: Getting near query rate limits.")
             else:
